@@ -1,6 +1,6 @@
 # Avatar Interaction using OpenAI's Realtime API and Simli Avatar API
 
-This fork utilizes OpenAI's Realtime API in combination with the Simli Avatar API to enable avatar interaction. While still in development, it essentially facilitates video agent conversations.
+This fork utilizes [OpenAI's Realtime API](https://platform.openai.com/docs/guides/realtime) in combination with the [Simli Avatar API](https://simli.com/) to enable avatar interaction. While still in development, it essentially facilitates video agent conversations.
 
 ## Table of Contents
 
@@ -37,8 +37,12 @@ This project demonstrates how to integrate OpenAI's Realtime Voice-to-Voice API 
    ```bash
    git clone https://github.com/yourusername/yourproject.git
    cd yourproject
+   ```
+
+   ``` bash 
    npm install
-```
+   ```
+
 
 ## Configuration
 
@@ -48,7 +52,7 @@ In the root directory of the project, create a file named .env.
 Add Your API Keys
 Add your OpenAI and Simli API keys to the .env file: 
 
-```
+```bash
 REACT_APP_OPENAI_API_KEY=your_openai_api_key
 REACT_APP_SIMLI_API_KEY=your_simli_api_key
 ```
@@ -67,16 +71,3 @@ Connect: Click on the Connect button to establish a connection.
 Push to Talk: Use the Push to Talk button to start speaking to the assistant.
 View Avatar: The Simli avatar will appear, representing the AI assistant.
 Use Tools: Try out tools like get_weather() and set_memory() within the conversation.
-
-
-
-Resources
-OpenAI Realtime API
-
-Documentation: OpenAI Realtime Voice-to-Voice API
-API Reference: OpenAI API Reference
-
-Simli Avatar API
-
-Website: Simli.ai
-Documentation: Simli Developer Docs
