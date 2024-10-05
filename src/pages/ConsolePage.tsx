@@ -1,3 +1,16 @@
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { RealtimeClient } from '../lib/realtime-api-beta/index.js';
+import { ItemType } from '../lib/realtime-api-beta/dist/lib/client.js';
+import { WavRecorder, WavStreamPlayer } from '../lib/wavtools/index.js';
+import { instructions } from '../utils/conversation_config.js';
+import { WavRenderer } from '../utils/wav_renderer';
+import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
+import { Button } from '../components/button/Button';
+import { Toggle } from '../components/toggle/Toggle';
+import { Map } from '../components/Map';
+import './ConsolePage.scss';
+import { SimliClient } from 'simli-client'; // Import SimliClient
+
 /**
  * Change this if you want to connect to a local relay server!
  * This will require you to set OPENAI_API_KEY= in a `.env` file
@@ -6,23 +19,7 @@
  * Simply switch the lines by commenting one and removing the other
  */
 // const USE_LOCAL_RELAY_SERVER_URL: string | undefined = 'http://localhost:8081';
-const USE_LOCAL_RELAY_SERVER_URL: string | undefined = void 0;
-
-import { useEffect, useRef, useCallback, useState } from 'react';
-
-import { RealtimeClient } from '../lib/realtime-api-beta/index.js';
-import { ItemType } from '../lib/realtime-api-beta/dist/lib/client.js';
-import { WavRecorder, WavStreamPlayer } from '../lib/wavtools/index.js';
-import { instructions } from '../utils/conversation_config.js';
-import { WavRenderer } from '../utils/wav_renderer';
-
-import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
-import { Button } from '../components/button/Button';
-import { Toggle } from '../components/toggle/Toggle';
-import { Map } from '../components/Map';
-
-import './ConsolePage.scss';
-import { isJsxOpeningLikeElement } from 'typescript';
+const USE_LOCAL_RELAY_SERVER_URL: string | undefined = undefined;
 
 /**
  * Type for result from get_weather() function call
@@ -50,6 +47,29 @@ interface RealtimeEvent {
   count?: number;
   event: { [key: string]: any };
 }
+
+function resampleAudioData(
+  inputData: Int16Array,
+  inputSampleRate: number,
+  outputSampleRate: number
+): Int16Array {
+  const sampleRateRatio = inputSampleRate / outputSampleRate;
+  const outputLength = Math.round(inputData.length / sampleRateRatio);
+  const outputData = new Int16Array(outputLength);
+
+  for (let i = 0; i < outputLength; i++) {
+    const sourceIndex = i * sampleRateRatio;
+    const lowerIndex = Math.floor(sourceIndex);
+    const upperIndex = Math.min(lowerIndex + 1, inputData.length - 1);
+    const interpolation = sourceIndex - lowerIndex;
+    outputData[i] =
+      (1 - interpolation) * inputData[lowerIndex] +
+      interpolation * inputData[upperIndex];
+  }
+
+  return outputData;
+}
+
 
 export function ConsolePage() {
   /**
@@ -87,6 +107,12 @@ export function ConsolePage() {
           }
     )
   );
+
+  // Simli refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const simliClientRef = useRef<SimliClient | null>(null);
+  const simliAudioBufferRef = useRef<Uint8Array[]>([]);
 
   /**
    * References for
@@ -155,41 +181,76 @@ export function ConsolePage() {
     }
   }, []);
 
+
+  const isSimliDataChannelOpen = () => {
+    if (!simliClientRef.current) return false;
+  
+    // Access internal properties (may vary depending on SimliClient implementation)
+    const pc = (simliClientRef.current as any).pc as RTCPeerConnection | null;
+    const dc = (simliClientRef.current as any).dc as RTCDataChannel | null;
+  
+    return (
+      pc !== null &&
+      pc.iceConnectionState === 'connected' &&
+      dc !== null &&
+      dc.readyState === 'open'
+    );
+  };
+  
   /**
    * Connect to conversation:
-   * WavRecorder taks speech input, WavStreamPlayer output, client is API client
+   * WavRecorder takes speech input, WavStreamPlayer output, client is API client
    */
   const connectConversation = useCallback(async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
-
+  
     // Set state variables
     startTimeRef.current = new Date().toISOString();
     setIsConnected(true);
     setRealtimeEvents([]);
     setItems(client.conversation.getItems());
-
+  
+    // Start Simli WebRTC connection
+    if (simliClientRef.current) {
+      simliClientRef.current.start();
+  
+      // // Wait for Simli data channel to be open
+      // while (!isSimliDataChannelOpen()) {
+      //   await new Promise((resolve) => setTimeout(resolve, 100));
+      // }
+      // console.log('Simli data channel is open');
+  
+      // Send empty audio data to Simli
+      const audioData = new Uint8Array(6000).fill(0);
+      simliClientRef.current.sendAudioData(audioData);
+      console.log('Sent initial empty audio data to Simli');
+    }
+  
+    // Now connect to OpenAI's realtime API
+    await client.connect();
+  
     // Connect to microphone
     await wavRecorder.begin();
-
+  
     // Connect to audio output
     await wavStreamPlayer.connect();
-
-    // Connect to realtime API
-    await client.connect();
+  
+    // Now send the initial message to the assistant
     client.sendUserMessageContent([
       {
-        type: `input_text`,
-        text: `Hello!`,
-        // text: `For testing purposes, I want you to list ten car brands. Number each item, e.g. "one (or whatever number you are one): the item name".`
+        type: 'input_text',
+        text: 'Hello!',
       },
     ]);
-
+  
     if (client.getTurnDetectionType() === 'server_vad') {
       await wavRecorder.record((data) => client.appendInputAudio(data.mono));
     }
   }, []);
+  
+  
 
   /**
    * Disconnect and reset conversation state
@@ -213,6 +274,11 @@ export function ConsolePage() {
 
     const wavStreamPlayer = wavStreamPlayerRef.current;
     await wavStreamPlayer.interrupt();
+
+    // Close Simli connection
+    if (simliClientRef.current) {
+      simliClientRef.current.close();
+    }
   }, []);
 
   const deleteConversationItem = useCallback(async (id: string) => {
@@ -373,6 +439,29 @@ export function ConsolePage() {
     const wavStreamPlayer = wavStreamPlayerRef.current;
     const client = clientRef.current;
 
+    // Initialize SimliClient
+    if (videoRef.current && audioRef.current) {
+      const simliApiKey = process.env.REACT_APP_SIMLI_API_KEY;
+      const simliFaceID = "76ebbef0-d0a7-46c6-a3fa-9958d0dc4980";
+
+      if (!simliApiKey || !simliFaceID) {
+        console.error('Simli API key or Face ID is not defined');
+      } else {
+        const SimliConfig = {
+          apiKey: simliApiKey,
+          faceID: simliFaceID,
+          handleSilence: true,
+          videoRef: videoRef,
+          audioRef: audioRef,
+        };
+
+        simliClientRef.current = new SimliClient();
+        simliClientRef.current.Initialize(SimliConfig);
+        
+        console.log('Simli Client initialized');
+      }
+    }
+
     // Set instructions
     client.updateSession({ instructions: instructions });
     // Set transcription, otherwise we don't get user transcriptions back
@@ -467,17 +556,48 @@ export function ConsolePage() {
     });
     client.on('error', (event: any) => console.error(event));
     client.on('conversation.interrupted', async () => {
-      const trackSampleOffset = await wavStreamPlayer.interrupt();
-      if (trackSampleOffset?.trackId) {
-        const { trackId, offset } = trackSampleOffset;
-        await client.cancelResponse(trackId, offset);
-      }
+      // Stop the assistant's audio in the client
+      // const trackSampleOffset = await wavStreamPlayerRef.current.interrupt();
+      // if (trackSampleOffset?.trackId) {
+      //   const { trackId, offset } = trackSampleOffset;
+      //   await client.cancelResponse(trackId, offset);
+      // }
+    
+      // Stop sending further audio data to Simli
+      simliAudioBufferRef.current = [];
+
     });
+    
     client.on('conversation.updated', async ({ item, delta }: any) => {
       const items = client.conversation.getItems();
+    
       if (delta?.audio) {
-        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+        // wavStreamPlayerRef.current.add16BitPCM(delta.audio, item.id);
+    
+        if (simliClientRef.current) {
+          const audioData = new Int16Array(delta.audio);
+          const resampledAudioData = resampleAudioData(audioData, 24000, 16000);
+    
+          if (isSimliDataChannelOpen()) {
+            // Send buffered audio first
+            if (simliAudioBufferRef.current.length > 0) {
+              simliAudioBufferRef.current.forEach((bufferedData) => {
+                simliClientRef.current!.sendAudioData(bufferedData);
+              });
+              simliAudioBufferRef.current = [];
+            }
+            // Send current resampled audio data
+            const resampledAudioDataUint8 = new Uint8Array(resampledAudioData.buffer);
+            simliClientRef.current.sendAudioData(resampledAudioDataUint8);
+          } else {
+            // Buffer the resampled audio data
+            const resampledAudioDataUint8 = new Uint8Array(resampledAudioData.buffer);
+            simliAudioBufferRef.current.push(resampledAudioDataUint8);
+            console.warn('Data channel is not open yet, buffering audio data');
+          }
+        }
       }
+    
       if (item.status === 'completed' && item.formatted.audio?.length) {
         const wavFile = await WavRecorder.decode(
           item.formatted.audio,
@@ -488,12 +608,19 @@ export function ConsolePage() {
       }
       setItems(items);
     });
+    
+    
 
     setItems(client.conversation.getItems());
 
     return () => {
       // cleanup; resets to defaults
       client.reset();
+
+      // Close SimliClient on unmount
+      if (simliClientRef.current) {
+        simliClientRef.current.close();
+      }
     };
   }, []);
 
@@ -719,6 +846,21 @@ export function ConsolePage() {
             <div className="content-block-title">set_memory()</div>
             <div className="content-block-body content-kv">
               {JSON.stringify(memoryKv, null, 2)}
+            </div>
+          </div>
+
+          {/* Simli Avatar Display */}
+          <div className="content-block simli-avatar">
+            <div className="content-block-title">Assistant Avatar</div>
+            <div className="content-block-body">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ width: '100%', height: 'auto' }}
+              />
+              <audio ref={audioRef} autoPlay />
             </div>
           </div>
         </div>
